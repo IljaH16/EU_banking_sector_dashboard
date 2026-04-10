@@ -1,151 +1,74 @@
+import os
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import plotly.express as px
+import textwrap
+
 
 # Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
-    page_title='GDP dashboard',
+    page_title='EU banking sector dashboard',
     page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
 )
+
+# set path
+os.chdir("C:/Users/Ilja/OneDrive/MyProjects/EU_banking_sector_dashboard")
 
 # -----------------------------------------------------------------------------
 # Declare some useful functions.
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
 
 # -----------------------------------------------------------------------------
-# Draw the actual page
+# read the data set
+dfc = pd.read_csv('data/dfc.csv')
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+# -----------------------------------------------------------------------------
+# User is choosing bank name
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+bank_list = dfc['Bank_name'].unique()
+selected_bank = st.selectbox("Select a Bank", options=bank_list)
 
-# Add some spacing
-''
-''
+ind = 'NPL_ratio'
+chart_data = dfc[(dfc.Bank_name == selected_bank)&(dfc.ind==ind)&(~dfc.sector.str.contains(r'^[A-Z]\s'))].copy() # the last filter is for non NACE codes
+chart_data = chart_data[chart_data.Amount > 0]
+max_date = chart_data.Period.max()
+bank_name = chart_data.Bank_name.unique()[0]
+# chart_data = chart_data[chart_data.Amount > 0.001]
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+# creating wrapped labels
+def wrap_labels(label, width=10):
+    return "<br>".join(textwrap.wrap(label, width=width))
+chart_data['sector'] = chart_data['sector'].apply(lambda x: wrap_labels(x, width=15))
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+# creating custom sort of groups
+custom_sector_order = list(chart_data[chart_data.Period == max_date].groupby('sector')['Amount'].max().sort_values(ascending=False).reset_index().sector.values)
+custom_sector_order.remove('Total')
+custom_sector_order.append('Total')
+chart_data['sector'] = pd.Categorical(chart_data['sector'], categories=custom_sector_order, ordered=True)
 
-countries = gdp_df['Country Code'].unique()
+# converting data to string
+chart_data['Period'] = chart_data['Period'].astype('object')
 
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
+# making the chart
+fig = px.bar(
+    chart_data,
+    x="sector",
+    y="Amount",
+    color="Period",
+    barmode="group",
+    title="NPL ratio by segments, "+bank_name,
+    labels={"Amount": ind.replace("_"," "), "sector": "", "Period": "Period"},
+    category_orders={
+        "sector": custom_sector_order,
+        # "Period": custom_period_order
+    }
+)
+fig.update_layout(yaxis_tickformat='.1%')
+fig.update_layout(
+    width=1200,
+    height=740,
+    autosize=False,
+    template='none'
 )
 
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+st.plotly_chart(fig, use_container_width=True)
